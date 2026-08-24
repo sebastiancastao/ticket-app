@@ -1,18 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchMissiveEmails } from "@/lib/missive";
+import { isAuthorizedForData } from "@/lib/embed-tokens";
 
-// Requires an authenticated session: this endpoint surfaces real customer
-// emails (names, phone numbers, addresses), and the board that calls it
-// sits on the /tickets page, which the proxy already gates — this check is
-// a second layer in case that ever changes.
-export async function GET() {
+// Requires either an authenticated session (the main /tickets board) or a
+// valid ?token= (the view-only /embed/tickets page) — both surface real
+// customer emails, so neither is optional.
+export async function GET(request: NextRequest) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  if (!(await isAuthorizedForData(supabase, request))) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
