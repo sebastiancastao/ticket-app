@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { MissiveEmail } from "@/lib/missive";
 
 type LoadState = "loading" | "ready" | "error";
@@ -22,33 +22,45 @@ export function EmbedEmailBoard({ token }: { token: string }) {
   const [emails, setEmails] = useState<MissiveEmail[]>([]);
   const [state, setState] = useState<LoadState>("loading");
   const [selectedId, setSelectedId] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadEmails = useCallback(async () => {
+    if (!token) {
+      setState("error");
+      return;
+    }
+    try {
+      const response = await fetch(`/api/missive/emails?token=${encodeURIComponent(token)}`);
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      const data = (await response.json()) as { emails: MissiveEmail[] };
+      setEmails(data.emails);
+      // Keep the current selection if it's still present after a refresh,
+      // instead of always snapping back to the first email.
+      setSelectedId((prev) =>
+        prev && data.emails.some((email) => email.id === prev) ? prev : (data.emails[0]?.id ?? "")
+      );
+      setState("ready");
+    } catch {
+      setState("error");
+    }
+  }, [token]);
 
   useEffect(() => {
     let cancelled = false;
-
-    async function load() {
-      if (!token) {
-        setState("error");
-        return;
-      }
-      try {
-        const response = await fetch(`/api/missive/emails?token=${encodeURIComponent(token)}`);
-        if (!response.ok) throw new Error(`status ${response.status}`);
-        const data = (await response.json()) as { emails: MissiveEmail[] };
-        if (cancelled) return;
-        setEmails(data.emails);
-        setSelectedId(data.emails[0]?.id ?? "");
-        setState("ready");
-      } catch {
-        if (!cancelled) setState("error");
-      }
+    async function initialLoad() {
+      if (!cancelled) await loadEmails();
     }
-
-    load();
+    initialLoad();
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [loadEmails]);
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    await loadEmails();
+    setRefreshing(false);
+  }
 
   const selectedEmail = emails.find((email) => email.id === selectedId);
 
@@ -67,7 +79,17 @@ export function EmbedEmailBoard({ token }: { token: string }) {
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       <div className="flex flex-col gap-3 rounded-xl border border-black/[.08] bg-white p-4 dark:border-white/[.145] dark:bg-[#0a0a0a]">
-        <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Emails</p>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Emails</p>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="shrink-0 rounded-full border border-black/[.08] px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-black/[.03] disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/[.1] dark:text-zinc-300 dark:hover:bg-white/[.05]"
+          >
+            {refreshing ? "Refreshing…" : "↻ Refresh"}
+          </button>
+        </div>
         {emails.length === 0 ? (
           <p className="text-sm text-zinc-500 dark:text-zinc-400">No emails in this mailbox scope yet.</p>
         ) : (
