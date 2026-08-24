@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { getTickets } from "@/lib/tickets";
-import { EmailExtractionBoard } from "@/components/EmailExtractionBoard";
 
 export default function Home() {
   const tickets = getTickets();
@@ -43,8 +42,6 @@ export default function Home() {
           Create ticket
         </Link>
       </div>
-
-      <EmailExtractionBoard />
     </div>
   );
 }
