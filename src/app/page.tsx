@@ -9,6 +9,8 @@ export default function Home() {
     closed: tickets.filter((t) => t.status === "closed").length,
   };
 
+
+  
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-10 px-6 py-16">
       <div className="flex flex-col gap-3">
