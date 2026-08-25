@@ -2,18 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createEmbedToken, listEmbedTokens } from "@/lib/embed-tokens";
 
-async function requireUser() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return { supabase, user };
-}
-
 export async function GET() {
-  const { supabase, user } = await requireUser();
-  if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-
+  const supabase = await createClient();
   try {
     const tokens = await listEmbedTokens(supabase);
     return NextResponse.json({ tokens });
@@ -24,14 +14,12 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const { supabase, user } = await requireUser();
-  if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-
+  const supabase = await createClient();
   const body = await request.json().catch(() => ({}));
   const label = typeof body.label === "string" && body.label.trim() ? body.label.trim() : null;
 
   try {
-    const { token, record } = await createEmbedToken(supabase, user.id, label);
+    const { token, record } = await createEmbedToken(supabase, label);
     // The raw token is only ever returned here — it isn't stored, so this
     // response is the one chance the caller has to see/copy it.
     return NextResponse.json({ token, record });

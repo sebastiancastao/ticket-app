@@ -1,5 +1,4 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 import type { DocumentMapping } from "@/lib/dhl-sameday-ticket";
 import { axisConfigFromEnv, AxisError, resolveServiceId, resolveVehicleId, submitOrders } from "@/lib/axis";
 import { AXIS_SUBMITTABLE_TYPES, mappingToAxisOrder, type AxisOrderDefaults } from "@/lib/axis-map";
@@ -10,18 +9,8 @@ import { appendLoggedOrders, type LoggedOrder } from "@/lib/order-log";
 export const runtime = "nodejs";
 
 // A successful (non-dryRun) submit creates a REAL dispatch order in Skyline's
-// production system — there is no sandbox. Signed-in only, same as the other
-// routes that touch real customer/shipment data.
+// production system — there is no sandbox, and this route is unauthenticated.
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  }
-
   let mapping: DocumentMapping;
   let sourceEmailId: string | undefined;
   let dryRun = false;

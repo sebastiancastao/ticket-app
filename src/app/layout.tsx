@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
-import { createClient } from "@/lib/supabase/server";
-import { logout } from "@/lib/auth-actions";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -20,12 +18,7 @@ export const metadata: Metadata = {
   description: "Simple ticket management system",
 };
 
-export default async function RootLayout({ children }: LayoutProps<"/">) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
+export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
@@ -38,42 +31,15 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
               🎫 Ticket App
             </Link>
             <div className="flex items-center gap-6 text-sm font-medium">
-              {user ? (
-                <>
-                  <Link href="/tickets" className="text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50">
-                    Tickets
-                  </Link>
-                  <Link
-                    href="/tickets/new"
-                    className="rounded-full bg-foreground px-4 py-1.5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
-                  >
-                    New ticket
-                  </Link>
-                  <span className="hidden text-zinc-500 dark:text-zinc-400 sm:inline">
-                    {user.email}
-                  </span>
-                  <form action={logout}>
-                    <button
-                      type="submit"
-                      className="text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
-                    >
-                      Log out
-                    </button>
-                  </form>
-                </>
-              ) : (
-                <>
-                  <Link href="/login" className="text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50">
-                    Log in
-                  </Link>
-                  <Link
-                    href="/signup"
-                    className="rounded-full bg-foreground px-4 py-1.5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
-                  >
-                    Sign up
-                  </Link>
-                </>
-              )}
+              <Link href="/tickets" className="text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50">
+                Tickets
+              </Link>
+              <Link
+                href="/tickets/new"
+                className="rounded-full bg-foreground px-4 py-1.5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
+              >
+                New ticket
+              </Link>
             </div>
           </nav>
         </header>

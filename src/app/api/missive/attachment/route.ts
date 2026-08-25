@@ -1,17 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 import { fetchMissiveAttachment } from "@/lib/missive";
-import { isAuthorizedForData } from "@/lib/embed-tokens";
 
-// Streams a PDF attachment back to the browser as a download. Requires
-// either a session (main app) or a valid ?token= (embed) — same reasoning
-// as the other Missive routes: this can surface real customer documents.
+// Streams a PDF attachment back to the browser as a download.
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  if (!(await isAuthorizedForData(supabase, request))) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  }
-
   const messageId = request.nextUrl.searchParams.get("messageId");
   const attachmentId = request.nextUrl.searchParams.get("attachmentId");
   if (!messageId || !attachmentId) {
