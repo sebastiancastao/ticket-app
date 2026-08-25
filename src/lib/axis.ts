@@ -881,7 +881,11 @@ export async function submitOrders(
       "/ClientPortal/ClientPortal/api/newOrderOnline/CheckOverLimit",
       payload
     );
-    if (overLimit) throw new AxisError(`Axis order is over limit: ${overLimit}`);
+    // The portal returns a message string when there's an actual limit issue,
+    // but a whitespace-only (or empty-array) placeholder otherwise — and both
+    // of those are still truthy in JS, so trim/stringify before deciding.
+    const overLimitMessage = String(overLimit ?? "").trim();
+    if (overLimitMessage) throw new AxisError(`Axis order is over limit: ${overLimitMessage}`);
 
     const online = await portalJson<{ OnlineIsOpen?: boolean; ReturnString?: string | null }>(
       session,
