@@ -31,7 +31,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               🎫 Ticket App
             </Link>
             <div className="flex items-center gap-6 text-sm font-medium">
-              <Link href="/tickets" className="text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50">
+              <Link href="/" className="text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50">
                 Tickets
               </Link>
               <Link

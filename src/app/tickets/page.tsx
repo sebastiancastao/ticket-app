@@ -1,11 +1,7 @@
-import { EmailExtractionBoard } from "@/components/EmailExtractionBoard";
-import { EmbedLinksPanel } from "@/components/EmbedLinksPanel";
+import { redirect } from "next/navigation";
 
+// The tickets board now lives at the site root — keep this path alive for
+// existing bookmarks/links instead of leaving it 404.
 export default function TicketsPage() {
-  return (
-    <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-6 py-12">
-      <EmailExtractionBoard />
-      <EmbedLinksPanel />
-    </div>
-  );
+  redirect("/");
 }
