@@ -49,6 +49,19 @@ export async function listEmbedTokens(supabase: SupabaseClient): Promise<EmbedTo
   }));
 }
 
+export async function isEmbedTokenValid(supabase: SupabaseClient, token: string): Promise<boolean> {
+  const trimmedToken = token.trim();
+  if (!trimmedToken) return false;
+
+  const { data, error } = await supabase.rpc("is_embed_token_valid", {
+    check_token_hash: hashToken(trimmedToken),
+  });
+
+  if (error) throw new Error(`Failed to validate embed token: ${error.message}`);
+
+  return data === true;
+}
+
 export async function revokeEmbedToken(supabase: SupabaseClient, id: string): Promise<void> {
   const { error } = await supabase
     .from("embed_tokens")

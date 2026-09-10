@@ -47,11 +47,12 @@ type MissiveAddress = { name: string; address: string };
 
 type MissiveConversation = {
   id: string;
-  latest_message_subject: string | null;
-  external_authors: MissiveAddress[];
-  authors: MissiveAddress[];
-  last_activity_at: number;
-  messages_count: number;
+  subject?: string | null;
+  latest_message_subject?: string | null;
+  external_authors?: MissiveAddress[];
+  authors?: MissiveAddress[];
+  last_activity_at?: number;
+  messages_count?: number;
 };
 
 type MissiveMessageSummary = { id: string };
@@ -71,7 +72,7 @@ type MissiveMessage = {
   body: string | null;
   delivered_at: number | null;
   from_field: MissiveAddress | null;
-  attachments: MissiveAttachment[];
+  attachments?: MissiveAttachment[];
 };
 
 // GET /v1/messages/:id wraps its result as { messages: {...} } — a single
@@ -142,6 +143,44 @@ export type MissiveEmail = MockEmail & {
   attachments?: { id: string; filename: string }[];
 };
 
+async function buildMissiveEmail(conversation: MissiveConversation): Promise<MissiveEmail | null> {
+  if (conversation.messages_count === 0) return null;
+
+  // Missive rejects limit < 2 on this endpoint even though we only want
+  // the single latest message (returned first / newest-first).
+  const { messages } = await missiveGet<{ messages: MissiveMessageSummary[] }>(
+    `/conversations/${conversation.id}/messages`,
+    { limit: "2" }
+  );
+  const latest = messages[0];
+  if (!latest) return null;
+
+  const message = await fetchMissiveMessage(latest.id);
+  const from =
+    message.from_field?.address ??
+    conversation.external_authors?.[0]?.address ??
+    conversation.authors?.[0]?.address ??
+    "unknown@unknown";
+  const rawBody = message.body ?? "";
+  const pdfAttachments = (message.attachments ?? []).filter(
+    (a) => a.extension.toLowerCase() === "pdf"
+  );
+  const ticketMapping = await classifyAttachments(pdfAttachments);
+
+  return {
+    id: conversation.id,
+    from,
+    subject: message.subject ?? conversation.latest_message_subject ?? conversation.subject ?? "(no subject)",
+    receivedAt: new Date(
+      (message.delivered_at ?? conversation.last_activity_at ?? Date.now() / 1000) * 1000
+    ).toISOString(),
+    body: looksLikeHtml(rawBody) ? stripHtml(rawBody) : rawBody,
+    messageId: message.id,
+    attachments: pdfAttachments.map((a) => ({ id: a.id, filename: a.filename })),
+    ...(ticketMapping ? { ticketMapping } : {}),
+  };
+}
+
 export async function fetchMissiveEmails(limit = 15): Promise<MissiveEmail[]> {
   // Which mailbox to read: inbox, all, assigned, closed, snoozed, flagged,
   // trashed, junked, or drafts (Missive requires exactly one such scope).
@@ -157,45 +196,20 @@ export async function fetchMissiveEmails(limit = 15): Promise<MissiveEmail[]> {
   // rate limit and every request comes back 429.
   const emails: MissiveEmail[] = [];
   for (const conversation of conversations) {
-    if (conversation.messages_count === 0) continue;
-
-    // Missive rejects limit < 2 on this endpoint even though we only want
-    // the single latest message (returned first / newest-first).
-    const { messages } = await missiveGet<{ messages: MissiveMessageSummary[] }>(
-      `/conversations/${conversation.id}/messages`,
-      { limit: "2" }
-    );
-    const latest = messages[0];
-    if (!latest) continue;
-
-    const message = await fetchMissiveMessage(latest.id);
-
-    const from =
-      message.from_field?.address ??
-      conversation.external_authors[0]?.address ??
-      conversation.authors[0]?.address ??
-      "unknown@unknown";
-    const rawBody = message.body ?? "";
-    const pdfAttachments = (message.attachments ?? []).filter(
-      (a) => a.extension.toLowerCase() === "pdf"
-    );
-    const ticketMapping = await classifyAttachments(pdfAttachments);
-
-    emails.push({
-      id: conversation.id,
-      from,
-      subject: message.subject ?? conversation.latest_message_subject ?? "(no subject)",
-      receivedAt: new Date(
-        (message.delivered_at ?? conversation.last_activity_at) * 1000
-      ).toISOString(),
-      body: looksLikeHtml(rawBody) ? stripHtml(rawBody) : rawBody,
-      messageId: message.id,
-      attachments: pdfAttachments.map((a) => ({ id: a.id, filename: a.filename })),
-      ...(ticketMapping ? { ticketMapping } : {}),
-    });
+    const email = await buildMissiveEmail(conversation);
+    if (email) emails.push(email);
   }
 
   return emails;
+}
+
+export async function fetchMissiveConversationEmail(conversationId: string): Promise<MissiveEmail | null> {
+  const { conversations } = await missiveGet<{ conversations: MissiveConversation }>(
+    `/conversations/${conversationId}`,
+    {}
+  );
+
+  return buildMissiveEmail(conversations);
 }
 
 // Re-fetches the message to get a fresh, unexpired signed URL for one of its

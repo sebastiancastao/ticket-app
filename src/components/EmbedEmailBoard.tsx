@@ -1,9 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import Script from "next/script";
+import { useCallback, useRef, useState } from "react";
 import type { MissiveEmail } from "@/lib/missive";
 
-type LoadState = "loading" | "ready" | "error";
+type LoadState = "loading-script" | "waiting" | "scanning" | "ready" | "not-ticket" | "error";
+type SelectedConversationResponse = { email: MissiveEmail | null; error?: string };
+
+type MissiveIframeConversation = {
+  id: string;
+  latest_message?: { id: string } | null;
+  messages_count?: number;
+};
+
+type MissiveIframeApi = {
+  on: (
+    event: "change:conversations",
+    callback: (ids: string[]) => void,
+    options?: { retroactive?: boolean }
+  ) => void;
+  fetchConversations: (ids: string[]) => Promise<MissiveIframeConversation[]>;
+};
+
+declare global {
+  interface Window {
+    Missive?: MissiveIframeApi;
+  }
+}
 
 function formatEmailDate(iso: string) {
   return new Date(iso).toLocaleString("en-US", {
@@ -14,167 +37,220 @@ function formatEmailDate(iso: string) {
   });
 }
 
-// View-only counterpart to EmailExtractionBoard, for cross-domain iframe
-// embedding: authenticates via the ?token= bearer token instead of the
-// session cookie (which third-party iframes can't rely on), and has no
-// Submit to Xcelerator action — this token can only ever read.
-export function EmbedEmailBoard({ token }: { token: string }) {
-  const [emails, setEmails] = useState<MissiveEmail[]>([]);
-  const [state, setState] = useState<LoadState>("loading");
-  const [selectedId, setSelectedId] = useState("");
-  const [refreshing, setRefreshing] = useState(false);
+function stateMessage(state: LoadState, message: string) {
+  if (message) return message;
+  if (state === "loading-script") return "Connecting to Missive...";
+  if (state === "waiting") return "Open one email conversation in Missive.";
+  if (state === "scanning") return "Scanning the selected email...";
+  if (state === "not-ticket") return "No DHL SameDay ticket was found in the selected email.";
+  if (state === "error") return "The selected email could not be processed.";
+  return "";
+}
 
-  const loadEmails = useCallback(async () => {
-    if (!token) {
+// View-only Missive iframe: it reacts to the currently selected Missive
+// conversation and only receives structured ticket data when the backend
+// recognizes a DHL SameDay PDF attachment.
+export function EmbedEmailBoard({ token }: { token: string }) {
+  const [email, setEmail] = useState<MissiveEmail | null>(null);
+  const [state, setState] = useState<LoadState>("loading-script");
+  const [message, setMessage] = useState("");
+  const [selectedConversationId, setSelectedConversationId] = useState("");
+  const listenerRegisteredRef = useRef(false);
+  const requestIdRef = useRef(0);
+
+  const scanConversation = useCallback(
+    async (conversationId: string) => {
+      if (!token) {
+        setEmail(null);
+        setState("error");
+        setMessage("This embed link is missing or no longer valid.");
+        return;
+      }
+
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+      setSelectedConversationId(conversationId);
+      setEmail(null);
+      setState("scanning");
+      setMessage("");
+
+      try {
+        const response = await fetch(
+          `/api/missive/conversations/${encodeURIComponent(conversationId)}?token=${encodeURIComponent(token)}`
+        );
+        const data = (await response.json().catch(() => ({}))) as Partial<SelectedConversationResponse>;
+        if (requestId !== requestIdRef.current) return;
+
+        if (!response.ok) {
+          throw new Error(data.error ?? `status ${response.status}`);
+        }
+
+        if (!data.email?.ticketMapping) {
+          setEmail(null);
+          setState("not-ticket");
+          return;
+        }
+
+        setEmail(data.email);
+        setState("ready");
+      } catch {
+        if (requestId !== requestIdRef.current) return;
+        setEmail(null);
+        setState("error");
+        setMessage("Unable to scan the selected Missive conversation.");
+      }
+    },
+    [token]
+  );
+
+  const handleConversationChange = useCallback(
+    async (ids: string[]) => {
+      if (ids.length !== 1) {
+        requestIdRef.current += 1;
+        setSelectedConversationId("");
+        setEmail(null);
+        setState("waiting");
+        setMessage(ids.length > 1 ? "Select a single email conversation in Missive." : "");
+        return;
+      }
+
+      const missive = window.Missive;
+      let conversationId = ids[0];
+
+      try {
+        const [conversation] = (await missive?.fetchConversations(ids)) ?? [];
+        if (conversation?.id) conversationId = conversation.id;
+        if (conversation && conversation.messages_count === 0 && !conversation.latest_message) {
+          requestIdRef.current += 1;
+          setSelectedConversationId(conversationId);
+          setEmail(null);
+          setState("not-ticket");
+          setMessage("The selected Missive conversation has no email message to scan.");
+          return;
+        }
+      } catch {
+        // The backend can still resolve the selected conversation id.
+      }
+
+      await scanConversation(conversationId);
+    },
+    [scanConversation]
+  );
+
+  const registerMissiveListener = useCallback(() => {
+    if (listenerRegisteredRef.current) return;
+
+    if (!window.Missive) {
       setState("error");
+      setMessage("Open this page from a Missive iframe integration.");
       return;
     }
+
+    listenerRegisteredRef.current = true;
+    setState("waiting");
+
     try {
-      const response = await fetch(`/api/missive/emails?token=${encodeURIComponent(token)}`);
-      if (!response.ok) throw new Error(`status ${response.status}`);
-      const data = (await response.json()) as { emails: MissiveEmail[] };
-      setEmails(data.emails);
-      // Keep the current selection if it's still present after a refresh,
-      // instead of always snapping back to the first email.
-      setSelectedId((prev) =>
-        prev && data.emails.some((email) => email.id === prev) ? prev : (data.emails[0]?.id ?? "")
+      window.Missive.on(
+        "change:conversations",
+        (ids) => {
+          void handleConversationChange(ids);
+        },
+        { retroactive: true }
       );
-      setState("ready");
     } catch {
       setState("error");
+      setMessage("Missive did not expose the selected conversation to this iframe.");
     }
-  }, [token]);
+  }, [handleConversationChange]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function initialLoad() {
-      if (!cancelled) await loadEmails();
-    }
-    initialLoad();
-    return () => {
-      cancelled = true;
-    };
-  }, [loadEmails]);
-
-  async function handleRefresh() {
-    setRefreshing(true);
-    await loadEmails();
-    setRefreshing(false);
-  }
-
-  const selectedEmail = emails.find((email) => email.id === selectedId);
-
-  if (state === "error") {
-    return (
-      <p className="text-sm text-red-600 dark:text-red-400">
-        This embed link is missing or no longer valid.
-      </p>
-    );
-  }
-
-  if (state === "loading") {
-    return <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>;
-  }
+  const statusText = stateMessage(state, message);
+  const attachments =
+    email?.messageId && email.attachments?.length
+      ? { messageId: email.messageId, attachments: email.attachments }
+      : null;
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <div className="flex flex-col gap-3 rounded-xl border border-black/[.08] bg-white p-4 dark:border-white/[.145] dark:bg-[#0a0a0a]">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Emails</p>
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="shrink-0 rounded-full border border-black/[.08] px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-black/[.03] disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/[.1] dark:text-zinc-300 dark:hover:bg-white/[.05]"
-          >
-            {refreshing ? "Refreshing…" : "↻ Refresh"}
-          </button>
-        </div>
-        {emails.length === 0 ? (
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">No emails in this mailbox scope yet.</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {emails.map((email) => {
-              const isSelected = email.id === selectedId;
-              return (
-                <li key={email.id}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedId(email.id)}
-                    aria-pressed={isSelected}
-                    className={`w-full rounded-lg border p-3 text-left transition-colors ${
-                      isSelected
-                        ? "border-zinc-950 bg-zinc-50 dark:border-zinc-50 dark:bg-[#1a1a1a]"
-                        : "border-black/[.08] hover:bg-black/[.03] dark:border-white/[.1] dark:hover:bg-[#141414]"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
-                        {email.subject}
-                      </span>
-                      <span className="flex shrink-0 items-center gap-2">
-                        {email.ticketMapping && (
-                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
-                            Ticket
-                          </span>
-                        )}
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          {formatEmailDate(email.receivedAt)}
-                        </span>
-                      </span>
-                    </div>
-                    <p className="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400">{email.from}</p>
-                    <p className="mt-1 line-clamp-2 whitespace-pre-line text-xs text-zinc-600 dark:text-zinc-400">
-                      {email.body}
-                    </p>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
+    <>
+      <Script
+        src="https://integrations.missiveapp.com/missive.js"
+        strategy="afterInteractive"
+        onReady={registerMissiveListener}
+        onError={() => {
+          setState("error");
+          setMessage("Missive's iframe library could not be loaded.");
+        }}
+      />
 
-      <div className="flex flex-col gap-3 rounded-xl border border-black/[.08] bg-white p-4 dark:border-white/[.145] dark:bg-[#0a0a0a]">
-        <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-          {selectedEmail?.ticketMapping
-            ? `Extracted Data — ${selectedEmail.ticketMapping.label} (${Math.round(
-                selectedEmail.ticketMapping.confidence * 100
-              )}% match)`
-            : "Extracted Data"}
-        </p>
-        {selectedEmail?.messageId && selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {selectedEmail.attachments.map((attachment) => (
-              <a
-                key={attachment.id}
-                href={`/api/missive/attachment?messageId=${encodeURIComponent(
-                  selectedEmail.messageId!
-                )}&attachmentId=${encodeURIComponent(attachment.id)}&token=${encodeURIComponent(token)}`}
-                className="inline-flex items-center gap-1.5 rounded-full border border-black/[.08] px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-black/[.03] dark:border-white/[.1] dark:text-zinc-300 dark:hover:bg-[#141414]"
-              >
-                ↓ {attachment.filename}
-              </a>
-            ))}
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
+              Selected Missive Email
+            </p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">{statusText}</p>
           </div>
-        )}
-        {selectedEmail?.ticketMapping ? (
-          <div className="flex flex-col gap-3">
-            {selectedEmail.ticketMapping.fields.map((field) => (
-              <div key={field.label} className="flex flex-col gap-1">
-                <span className="text-xs text-zinc-500 dark:text-zinc-400">{field.label}</span>
-                <p className="whitespace-pre-line text-sm text-zinc-900 dark:text-zinc-100">
-                  {field.value ?? "Not found"}
-                </p>
+          {selectedConversationId && (
+            <button
+              type="button"
+              onClick={() => void scanConversation(selectedConversationId)}
+              disabled={state === "scanning"}
+              className="shrink-0 rounded-lg border border-black/[.08] px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-black/[.03] disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/[.1] dark:text-zinc-300 dark:hover:bg-white/[.05]"
+            >
+              {state === "scanning" ? "Scanning..." : "Rescan"}
+            </button>
+          )}
+        </div>
+
+        {email?.ticketMapping ? (
+          <div className="flex flex-col gap-3 rounded-lg border border-black/[.08] bg-white p-4 dark:border-white/[.145] dark:bg-[#0a0a0a]">
+            <div className="flex flex-col gap-1">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <p className="text-sm font-medium text-zinc-950 dark:text-zinc-50">{email.subject}</p>
+                <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                  {Math.round(email.ticketMapping.confidence * 100)}% match
+                </span>
               </div>
-            ))}
+              <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
+                {email.from} - {formatEmailDate(email.receivedAt)}
+              </p>
+            </div>
+
+            {attachments && (
+              <div className="flex flex-wrap gap-2">
+                {attachments.attachments.map((attachment) => (
+                  <a
+                    key={attachment.id}
+                    href={`/api/missive/attachment?messageId=${encodeURIComponent(
+                      attachments.messageId
+                    )}&attachmentId=${encodeURIComponent(attachment.id)}&token=${encodeURIComponent(token)}`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-black/[.08] px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-black/[.03] dark:border-white/[.1] dark:text-zinc-300 dark:hover:bg-[#141414]"
+                  >
+                    Download {attachment.filename}
+                  </a>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-col gap-3">
+              <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                Extracted Data - {email.ticketMapping.label}
+              </p>
+              {email.ticketMapping.fields.map((field) => (
+                <div key={field.label} className="flex flex-col gap-1">
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">{field.label}</span>
+                  <p className="whitespace-pre-line text-sm text-zinc-900 dark:text-zinc-100">
+                    {field.value ?? "Not found"}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            {selectedEmail ? "No structured data extracted from this email." : "Select an email to see its data."}
-          </p>
+          <div className="rounded-lg border border-dashed border-black/[.12] bg-white p-4 text-sm text-zinc-500 dark:border-white/[.16] dark:bg-[#0a0a0a] dark:text-zinc-400">
+            {statusText}
+          </div>
         )}
       </div>
-    </div>
+    </>
   );
 }
