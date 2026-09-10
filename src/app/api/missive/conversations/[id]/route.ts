@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { hasConfiguredEmbedToken, isConfiguredEmbedTokenValid } from "@/lib/embed-tokens";
+import { extractUuid } from "@/lib/missive-id";
 import { fetchMissiveConversationEmail } from "@/lib/missive";
 
 export async function GET(
@@ -18,7 +19,15 @@ export async function GET(
     }
 
     const { id } = await params;
-    const email = await fetchMissiveConversationEmail(id);
+    const conversationId = extractUuid(id);
+    if (!conversationId) {
+      return NextResponse.json(
+        { error: "Selected Missive conversation id did not contain a UUID." },
+        { status: 400 }
+      );
+    }
+
+    const email = await fetchMissiveConversationEmail(conversationId);
 
     return NextResponse.json({ email: email?.ticketMapping ? email : null });
   } catch (error) {

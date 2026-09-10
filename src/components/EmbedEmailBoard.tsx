@@ -2,6 +2,7 @@
 
 import Script from "next/script";
 import { useCallback, useRef, useState } from "react";
+import { extractUuids } from "@/lib/missive-id";
 import type { MissiveEmail } from "@/lib/missive";
 
 type LoadState = "loading-script" | "waiting" | "scanning" | "ready" | "not-ticket" | "error";
@@ -16,7 +17,7 @@ type MissiveIframeConversation = {
 type MissiveIframeApi = {
   on: (
     event: "change:conversations",
-    callback: (ids: string[]) => void,
+    callback: (payload: unknown) => void,
     options?: { retroactive?: boolean }
   ) => void;
   fetchConversations: (ids: string[]) => Promise<MissiveIframeConversation[]>;
@@ -108,13 +109,19 @@ export function EmbedEmailBoard({ token }: { token: string }) {
   );
 
   const handleConversationChange = useCallback(
-    async (ids: string[]) => {
+    async (payload: unknown) => {
+      const ids = extractUuids(payload);
+
       if (ids.length !== 1) {
         requestIdRef.current += 1;
         setSelectedConversationId("");
         setEmail(null);
         setState("waiting");
-        setMessage(ids.length > 1 ? "Select a single email conversation in Missive." : "");
+        setMessage(
+          ids.length > 1
+            ? "Select a single email conversation in Missive."
+            : "Missive did not provide a conversation UUID for the selected email."
+        );
         return;
       }
 
@@ -123,7 +130,7 @@ export function EmbedEmailBoard({ token }: { token: string }) {
 
       try {
         const [conversation] = (await missive?.fetchConversations(ids)) ?? [];
-        if (conversation?.id) conversationId = conversation.id;
+        conversationId = extractUuids(conversation?.id)[0] ?? conversationId;
         if (conversation && conversation.messages_count === 0 && !conversation.latest_message) {
           requestIdRef.current += 1;
           setSelectedConversationId(conversationId);
