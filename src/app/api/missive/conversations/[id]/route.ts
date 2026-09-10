@@ -22,8 +22,11 @@ export async function GET(
     return NextResponse.json({ email: email?.ticketMapping ? email : null });
   } catch (error) {
     console.error("Failed to fetch selected Missive conversation:", error);
+    const message =
+      error instanceof Error ? error.message : "Failed to fetch selected Missive conversation";
+
     return NextResponse.json(
-      { error: "Failed to fetch selected Missive conversation" },
+      { error: message },
       { status: 502 }
     );
   }

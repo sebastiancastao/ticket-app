@@ -93,11 +93,15 @@ export function EmbedEmailBoard({ token }: { token: string }) {
 
         setEmail(data.email);
         setState("ready");
-      } catch {
+      } catch (error) {
         if (requestId !== requestIdRef.current) return;
         setEmail(null);
         setState("error");
-        setMessage("Unable to scan the selected Missive conversation.");
+        setMessage(
+          error instanceof Error
+            ? error.message
+            : "Unable to scan the selected Missive conversation."
+        );
       }
     },
     [token]
