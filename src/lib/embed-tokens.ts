@@ -11,6 +11,20 @@ function safeTokenCompare(left: string, right: string): boolean {
   return leftHash.length === rightHash.length && timingSafeEqual(leftHash, rightHash);
 }
 
+function configuredEmbedToken(): string {
+  return process.env.MISSIVE_EMBED_TOKEN?.trim() ?? "";
+}
+
+export function hasConfiguredEmbedToken(): boolean {
+  return Boolean(configuredEmbedToken());
+}
+
+export function isConfiguredEmbedTokenValid(token: string): boolean {
+  const staticToken = configuredEmbedToken();
+  const trimmedToken = token.trim();
+  return Boolean(staticToken && trimmedToken && safeTokenCompare(trimmedToken, staticToken));
+}
+
 export type EmbedToken = {
   id: string;
   label: string | null;
@@ -59,8 +73,7 @@ export async function isEmbedTokenValid(supabase: SupabaseClient, token: string)
   const trimmedToken = token.trim();
   if (!trimmedToken) return false;
 
-  const staticToken = process.env.MISSIVE_EMBED_TOKEN?.trim();
-  if (staticToken && safeTokenCompare(trimmedToken, staticToken)) return true;
+  if (isConfiguredEmbedTokenValid(trimmedToken)) return true;
 
   const { data, error } = await supabase.rpc("is_embed_token_valid", {
     check_token_hash: hashToken(trimmedToken),

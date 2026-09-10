@@ -1,18 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { isEmbedTokenValid } from "@/lib/embed-tokens";
+import { hasConfiguredEmbedToken, isConfiguredEmbedTokenValid } from "@/lib/embed-tokens";
 import { fetchMissiveConversationEmail } from "@/lib/missive";
-import { createClient } from "@/lib/supabase/server";
-
-function canBypassSupabaseEmbedValidation(token: string, error: unknown): boolean {
-  if (process.env.NODE_ENV === "production") return false;
-  if (!token.trim()) return false;
-
-  console.warn(
-    "Supabase embed token validation failed; allowing the non-empty token in development only.",
-    error
-  );
-  return true;
-}
 
 export async function GET(
   request: NextRequest,
@@ -21,17 +9,11 @@ export async function GET(
   const token = request.nextUrl.searchParams.get("token") ?? "";
 
   try {
-    const supabase = await createClient();
-    let validToken = false;
-
-    try {
-      validToken = await isEmbedTokenValid(supabase, token);
-    } catch (error) {
-      if (!canBypassSupabaseEmbedValidation(token, error)) throw error;
-      validToken = true;
+    if (!token.trim()) {
+      return NextResponse.json({ error: "Invalid embed token" }, { status: 401 });
     }
 
-    if (!validToken) {
+    if (hasConfiguredEmbedToken() && !isConfiguredEmbedTokenValid(token)) {
       return NextResponse.json({ error: "Invalid embed token" }, { status: 401 });
     }
 
