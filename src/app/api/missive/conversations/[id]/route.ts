@@ -3,15 +3,34 @@ import { isEmbedTokenValid } from "@/lib/embed-tokens";
 import { fetchMissiveConversationEmail } from "@/lib/missive";
 import { createClient } from "@/lib/supabase/server";
 
+function canBypassSupabaseEmbedValidation(token: string, error: unknown): boolean {
+  if (process.env.NODE_ENV === "production") return false;
+  if (!token.trim()) return false;
+
+  console.warn(
+    "Supabase embed token validation failed; allowing the non-empty token in development only.",
+    error
+  );
+  return true;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const token = request.nextUrl.searchParams.get("token") ?? "";
-  const supabase = await createClient();
 
   try {
-    const validToken = await isEmbedTokenValid(supabase, token);
+    const supabase = await createClient();
+    let validToken = false;
+
+    try {
+      validToken = await isEmbedTokenValid(supabase, token);
+    } catch (error) {
+      if (!canBypassSupabaseEmbedValidation(token, error)) throw error;
+      validToken = true;
+    }
+
     if (!validToken) {
       return NextResponse.json({ error: "Invalid embed token" }, { status: 401 });
     }

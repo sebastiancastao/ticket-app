@@ -1,8 +1,14 @@
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function safeTokenCompare(left: string, right: string): boolean {
+  const leftHash = Buffer.from(hashToken(left));
+  const rightHash = Buffer.from(hashToken(right));
+  return leftHash.length === rightHash.length && timingSafeEqual(leftHash, rightHash);
 }
 
 export type EmbedToken = {
@@ -52,6 +58,9 @@ export async function listEmbedTokens(supabase: SupabaseClient): Promise<EmbedTo
 export async function isEmbedTokenValid(supabase: SupabaseClient, token: string): Promise<boolean> {
   const trimmedToken = token.trim();
   if (!trimmedToken) return false;
+
+  const staticToken = process.env.MISSIVE_EMBED_TOKEN?.trim();
+  if (staticToken && safeTokenCompare(trimmedToken, staticToken)) return true;
 
   const { data, error } = await supabase.rpc("is_embed_token_valid", {
     check_token_hash: hashToken(trimmedToken),
