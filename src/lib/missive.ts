@@ -1,6 +1,7 @@
 import type { MockEmail } from "@/lib/mock-emails";
 import { extractPdfText } from "@/lib/pdf-text";
 import { classifyDhlSamedayTicket, type DocumentMapping } from "@/lib/dhl-sameday-ticket";
+import { extractUuid } from "@/lib/missive-id";
 
 const API_BASE = "https://public.missiveapp.com/v1";
 
@@ -38,7 +39,7 @@ async function missiveGet<T>(path: string, params: Record<string, string>): Prom
       await sleep(retryAfter * 1000);
       continue;
     }
-    throw new Error(`Missive request failed (${response.status}): ${bodyText}`);
+    throw new Error(`Missive request failed ${path} (${response.status}): ${bodyText}`);
   }
   throw new Error("Missive request failed: exhausted retries");
 }
@@ -192,12 +193,13 @@ function buildMissiveEmail(
 }
 
 async function fetchLatestMissiveEmail(conversation: MissiveConversation): Promise<MissiveEmail | null> {
-  if (conversation.messages_count === 0) return null;
+  const conversationId = extractUuid(conversation.id);
+  if (!conversationId || conversation.messages_count === 0) return null;
 
   // Missive rejects limit < 2 on this endpoint even though we only want
   // the single latest message (returned first / newest-first).
   const { messages } = await missiveGet<{ messages: MissiveMessageSummary[] }>(
-    `/conversations/${conversation.id}/messages`,
+    `/conversations/${conversationId}/messages`,
     { limit: "2" }
   );
   const latest = messages[0];
@@ -207,13 +209,18 @@ async function fetchLatestMissiveEmail(conversation: MissiveConversation): Promi
   const attachments = pdfAttachments(message);
   const ticketMapping = await classifyMessageTicket(message, attachments);
 
-  return buildMissiveEmail(conversation, message, attachments, ticketMapping);
+  return buildMissiveEmail({ ...conversation, id: conversationId }, message, attachments, ticketMapping);
 }
 
 async function fetchConversationMessageSummaries(
   conversationId: string,
   maxMessages = 20
 ): Promise<MissiveMessageSummary[]> {
+  const normalizedConversationId = extractUuid(conversationId);
+  if (!normalizedConversationId) {
+    throw new Error("Internal Missive conversation id did not contain a UUID.");
+  }
+
   const summaries: MissiveMessageSummary[] = [];
   const seen = new Set<string>();
   let until: number | undefined;
@@ -223,7 +230,7 @@ async function fetchConversationMessageSummaries(
     if (until !== undefined) params.until = String(until);
 
     const { messages } = await missiveGet<{ messages: MissiveMessageSummary[] }>(
-      `/conversations/${conversationId}/messages`,
+      `/conversations/${normalizedConversationId}/messages`,
       params
     );
     if (messages.length === 0) break;
@@ -280,21 +287,33 @@ export async function fetchMissiveEmails(limit = 15): Promise<MissiveEmail[]> {
 }
 
 export async function fetchMissiveConversationEmail(conversationId: string): Promise<MissiveEmail | null> {
-  const { conversations } = await missiveGet<{ conversations: MissiveConversation }>(
-    `/conversations/${conversationId}`,
+  const normalizedConversationId = extractUuid(conversationId);
+  if (!normalizedConversationId) {
+    throw new Error("Selected Missive conversation id did not contain a UUID.");
+  }
+
+  const { conversations } = await missiveGet<{
+    conversations: MissiveConversation | MissiveConversation[];
+  }>(
+    `/conversations/${normalizedConversationId}`,
     {}
   );
+  const conversationResult = Array.isArray(conversations) ? conversations[0] : conversations;
+  if (!conversationResult) return null;
 
-  if (conversations.messages_count === 0) return null;
+  const resolvedConversationId = extractUuid(conversationResult.id) ?? normalizedConversationId;
+  const conversation = { ...conversationResult, id: resolvedConversationId };
 
-  const summaries = await fetchConversationMessageSummaries(conversations.id);
+  if (conversation.messages_count === 0) return null;
+
+  const summaries = await fetchConversationMessageSummaries(resolvedConversationId);
   const messages = await fetchFullConversationMessages(summaries);
 
   for (const message of messages) {
     const attachments = pdfAttachments(message);
     const ticketMapping = await classifyMessageTicket(message, attachments);
     if (ticketMapping) {
-      return buildMissiveEmail(conversations, message, attachments, ticketMapping);
+      return buildMissiveEmail(conversation, message, attachments, ticketMapping);
     }
   }
 
