@@ -144,6 +144,7 @@ const AIRLINE_NAMES: Record<string, string> = {
   B6: "JetBlue Airways",
   DL: "Delta Air Lines",
   F9: "Frontier Airlines",
+  LH: "Lufthansa",
   NK: "Spirit Airlines",
   UA: "United Airlines",
   WN: "Southwest Airlines",
@@ -1355,6 +1356,89 @@ const CAP_LOGISTICS: DocumentDefinition = {
   },
 };
 
+// --- Axis Global Logistics shipment status e-mail thread --------------------
+//
+// Not a printed form at all — an Outlook-style forwarded/quoted e-mail chain
+// between Skyline Dispatch and Axis Global Logistics' Aviation Desk/TMS,
+// tracking one shipment ("Housebill # ...") from cutoff through tender. Every
+// reply just appends a short status sentence ("Driver tendered 20:45
+// 03/18/2026") rather than filling a labeled box, so extraction reads those
+// sentences directly instead of the label/value helpers the ticket forms use.
+// Recognised and field-mapped for the record, but not an AWB/IAC source
+// (nothing to fill) and not a new order (it's a reply *about* an existing
+// one), so it deliberately isn't in AWB_FILLABLE_TYPES or
+// AXIS_SUBMITTABLE_TYPES on the client.
+const AXIS_HOUSEBILL_THREAD: DocumentDefinition = {
+  type: "axis-housebill-thread",
+  label: "Axis Shipment Status Email Thread",
+  match: ({ text, fileName }) => {
+    const flat = flatten(text).toLowerCase();
+    const name = fileName.toLowerCase();
+    let score = 0;
+    if (/housebill\s*#\s*\d+/.test(flat)) score += 0.4;
+    if (/tms axis global logistics|aviation desk/.test(flat)) score += 0.2;
+    if (/axisg\.com/.test(flat)) score += 0.2;
+    if (/shipment document\(s\) for housebill/.test(flat)) score += 0.15;
+    if (/housebill/.test(name)) score += 0.1;
+    return Math.min(score, 1);
+  },
+  extract: ({ text }) => {
+    const flat = flatten(text);
+    // "CUT OFF 19 MAR 26 | 14:55"
+    const cutoff = flat.match(
+      /CUT\s*OFF\s*(\d{1,2}\s+[A-Z]{3}\s+\d{2,4})\s*\|\s*(\d{2}:\d{2})/i,
+    );
+    // "On board at 03/18/2026 16:58"
+    const onBoard = flat.match(
+      /On\s*board\s*at\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{2}:\d{2})/i,
+    );
+    // "Driver is on site to tender at 19:47 03/18/2026"
+    const onSite = flat.match(
+      /Driver\s+is\s+on\s+site\s+to\s+tender\s+at\s+(\d{2}:\d{2})\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i,
+    );
+    // "Driver tendered 20:45 03/18/2026"
+    const tendered = flat.match(
+      /Driver\s+tendered\s+(\d{2}:\d{2})\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i,
+    );
+
+    return [
+      {
+        label: "Housebill Number",
+        value: capture(text, /Housebill\s*#\s*(\d+)/i),
+      },
+      {
+        label: "Carrier (Tender To)",
+        // Case-sensitive on purpose: a stray lowercase "to" elsewhere in the
+        // thread shouldn't be mistaken for a 2-letter carrier code.
+        value: airlineName(capture(text, /tender\s+to\s+([A-Z]{2})\b/)),
+      },
+      {
+        label: "Cutoff (Date/Time)",
+        value: cutoff ? `${cutoff[1]} ${cutoff[2]}` : null,
+      },
+      {
+        label: "On Board (Date/Time)",
+        value: onBoard ? `${onBoard[1]} ${onBoard[2]}` : null,
+      },
+      {
+        label: "Driver On Site (Date/Time)",
+        value: onSite ? `${onSite[2]} ${onSite[1]}` : null,
+      },
+      {
+        label: "Driver Tendered (Date/Time)",
+        value: tendered ? `${tendered[2]} ${tendered[1]}` : null,
+      },
+      {
+        label: "Wait Code / Latest Reply",
+        value: capture(
+          text,
+          /Hello\s+Team,[\s\S]{0,40}?(\d{6,})[\s\S]{0,20}?Regards/i,
+        ),
+      },
+    ];
+  },
+};
+
 const DEFINITIONS: DocumentDefinition[] = [
   DHL_IAC,
   AWB_GUIDE,
@@ -1364,6 +1448,7 @@ const DEFINITIONS: DocumentDefinition[] = [
   AIT_PICKUP_ORDER,
   ICAT_ROUTING_ALERT,
   CAP_LOGISTICS,
+  AXIS_HOUSEBILL_THREAD,
 ];
 
 const MIN_CONFIDENCE = 0.5;
