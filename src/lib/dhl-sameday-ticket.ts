@@ -4,6 +4,8 @@
 // dispatch/routing ticket that DHL SameDay job-alert emails carry as a PDF
 // attachment).
 
+import { capture, cleanValue, flatten, valueAfter } from "./document-text";
+
 export type MappedField = {
   /** Human-readable field name, e.g. "Air Waybill Number". */
   label: string;
@@ -21,33 +23,8 @@ export type DocumentMapping = {
 
 const MIN_CONFIDENCE = 0.5;
 
-// --- Text helpers (verbatim from the source) --------------------------------
-
-function flatten(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-function cleanValue(raw: string | undefined | null): string | null {
-  if (!raw) return null;
-  const v = raw
-    .replace(/[._…]+/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/[\s,;:|]+$/, "")
-    .trim();
-  if (!/[A-Za-z0-9]/.test(v)) return null;
-  return v.length > 0 ? v : null;
-}
-
-function valueAfter(text: string, label: string): string | null {
-  const re = new RegExp(`${label}[^\\S\\r\\n]*:?[^\\S\\r\\n]*([^\\r\\n]*)`, "i");
-  const m = text.match(re);
-  return m ? cleanValue(m[1]) : null;
-}
-
-function capture(text: string, re: RegExp): string | null {
-  const m = flatten(text).match(re);
-  return m ? cleanValue(m[1]) : null;
-}
+// Text helpers (flatten/cleanValue/valueAfter/capture) now live in
+// document-text.ts, shared with other document classifiers.
 
 const AIRLINE_NAMES: Record<string, string> = {
   AA: "American Airlines",

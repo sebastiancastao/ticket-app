@@ -49,9 +49,10 @@ export function EmailExtractionBoard() {
   // clobber in-progress edits.
   const [fieldEdits, setFieldEdits] = useState<Record<string, Record<string, string>>>({});
 
-  // Only emails with a recognized DHL SameDay ticket attachment show up in
-  // the board — everything else is inbox noise (quote requests, replies,
-  // etc.) that has nothing to submit to Axis.
+  // Only emails with a recognized document (DHL SameDay ticket, AIT delivery
+  // order, ...) show up in the board — everything else is inbox noise
+  // (quote requests, replies, etc.). Not every recognized type is
+  // submittable to Axis yet; see AXIS_SUBMITTABLE_TYPES.
   const ticketEmails = useMemo(() => emails.filter((email) => email.ticketMapping), [emails]);
   const submittableTicketEmails = useMemo(
     () =>
@@ -400,7 +401,7 @@ export function EmailExtractionBoard() {
             ? "This ticket has already been submitted to Axis."
             : isSubmittableTicket
               ? "Creates a real dispatch order in Skyline's Axis system — this is not a simulation. \"Process All Tickets\" submits every pending ticket the same way, one at a time."
-              : "Only available for emails with an extracted DHL SameDay ticket."}
+              : "Only available for document types configured for Axis submission (currently: DHL SameDay ticket)."}
         </p>
       </div>
     </div>
