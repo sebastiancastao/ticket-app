@@ -4,6 +4,15 @@ import Script from "next/script";
 import { useCallback, useRef, useState } from "react";
 import { extractUuids } from "@/lib/missive-id";
 import type { MissiveEmail } from "@/lib/missive";
+import { AXIS_SUBMITTABLE_TYPES } from "@/lib/axis-map";
+import { applyFieldEdits, submitToAxis, type SubmitOutcome } from "@/lib/axis-client";
+import {
+  EditableTicketFields,
+  OrderDocumentsSection,
+  useDocumentUploadConfigured,
+  useFieldEdits,
+  useOrderDocuments,
+} from "@/components/TicketOrderControls";
 
 type LoadState = "loading-script" | "waiting" | "scanning" | "ready" | "not-ticket" | "error";
 type SelectedConversationResponse = { email: MissiveEmail | null; error?: string };
@@ -48,9 +57,10 @@ function stateMessage(state: LoadState, message: string) {
   return "";
 }
 
-// View-only Missive iframe: it reacts to the currently selected Missive
-// conversation and only receives structured ticket data when the backend
-// recognizes a DHL SameDay PDF attachment.
+// Missive iframe: it reacts to the currently selected Missive conversation
+// and only receives structured ticket data when the backend recognizes a DHL
+// SameDay PDF attachment. The ticket can then be corrected and submitted to
+// Axis the same way as on the main board.
 export function EmbedEmailBoard({ token }: { token: string }) {
   const [email, setEmail] = useState<MissiveEmail | null>(null);
   const [state, setState] = useState<LoadState>("loading-script");
@@ -58,6 +68,13 @@ export function EmbedEmailBoard({ token }: { token: string }) {
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const listenerRegisteredRef = useRef(false);
   const requestIdRef = useRef(0);
+  // Edits, documents and submit results are keyed by conversation id, so they
+  // survive switching conversations in Missive and coming back.
+  const fieldEdits = useFieldEdits();
+  const docs = useOrderDocuments();
+  const docUploadConfigured = useDocumentUploadConfigured();
+  const [results, setResults] = useState<Record<string, SubmitOutcome>>({});
+  const [submittingFor, setSubmittingFor] = useState<string | null>(null);
 
   const scanConversation = useCallback(
     async (conversationId: string) => {
@@ -174,6 +191,28 @@ export function EmbedEmailBoard({ token }: { token: string }) {
     }
   }, [handleConversationChange]);
 
+  const isBusy = submittingFor !== null || docs.uploadingFor !== null;
+  const result = email ? results[email.id] : undefined;
+  const alreadySubmitted = result?.kind === "success";
+  const isSubmittable = !!email?.ticketMapping && AXIS_SUBMITTABLE_TYPES.has(email.ticketMapping.type);
+
+  // The result is filed under the submitted conversation, even if Missive
+  // switches to another one while the order is being created.
+  async function handleSubmit() {
+    if (!email?.ticketMapping || !isSubmittable || alreadySubmitted || isBusy) return;
+    const emailId = email.id;
+    const files = docs.pendingFor(emailId);
+    setSubmittingFor(emailId);
+    const outcome = await submitToAxis({
+      mapping: applyFieldEdits(email.ticketMapping, fieldEdits.editsFor(emailId)),
+      sourceEmailId: emailId,
+      documents: files,
+    });
+    if (outcome.kind === "success") docs.applyResults(emailId, files, outcome.documents);
+    setResults((prev) => ({ ...prev, [emailId]: outcome }));
+    setSubmittingFor(null);
+  }
+
   const statusText = stateMessage(state, message);
   const attachments =
     email?.messageId && email.attachments?.length
@@ -246,14 +285,73 @@ export function EmbedEmailBoard({ token }: { token: string }) {
               <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
                 Extracted Data - {email.ticketMapping.label}
               </p>
-              {email.ticketMapping.fields.map((field) => (
-                <div key={field.label} className="flex flex-col gap-1">
-                  <span className="text-xs text-zinc-500 dark:text-zinc-400">{field.label}</span>
-                  <p className="whitespace-pre-line text-sm text-zinc-900 dark:text-zinc-100">
-                    {field.value ?? "Not found"}
-                  </p>
-                </div>
-              ))}
+              <EditableTicketFields
+                mapping={email.ticketMapping}
+                edits={fieldEdits.editsFor(email.id)}
+                disabled={isBusy || alreadySubmitted}
+                onChange={(label, value) => fieldEdits.change(email.id, label, value)}
+                onReset={(label) => fieldEdits.reset(email.id, label)}
+              />
+              {isSubmittable && (
+                <OrderDocumentsSection
+                  pending={docs.pendingFor(email.id)}
+                  attached={docs.attachedFor(email.id)}
+                  error={docs.errorFor(email.id)}
+                  configured={docUploadConfigured}
+                  orderTrackingId={result?.kind === "success" ? result.orderTrackingId : ""}
+                  disabled={isBusy}
+                  uploading={docs.uploadingFor === email.id}
+                  onAdd={(files) => docs.add(email.id, files)}
+                  onRemove={(file) => docs.remove(email.id, file)}
+                  onUpload={() => {
+                    if (result?.kind === "success" && !isBusy) void docs.uploadTo(email.id, result.orderTrackingId);
+                  }}
+                />
+              )}
+            </div>
+
+            <div className="flex flex-col gap-2 border-t border-black/[.08] pt-3 dark:border-white/[.145]">
+              {isSubmittable && (
+                <button
+                  type="button"
+                  onClick={() => void handleSubmit()}
+                  disabled={alreadySubmitted || isBusy}
+                  className="rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-[#ccc]"
+                >
+                  {submittingFor === email.id
+                    ? "Submitting..."
+                    : alreadySubmitted
+                      ? "Submitted"
+                      : "Submit to Xcelerator"}
+                </button>
+              )}
+              {result?.kind === "success" && (
+                <p className="text-sm text-emerald-600 dark:text-emerald-400">
+                  Order created - Axis tracking ID {result.orderTrackingId}
+                  {result.documents.length > 0 && result.documents.every((d) => d.ok) && (
+                    <>
+                      {" "}
+                      - {result.documents.length} document{result.documents.length === 1 ? "" : "s"} attached
+                    </>
+                  )}
+                </p>
+              )}
+              {result?.kind === "success" && result.documents.some((d) => !d.ok) && (
+                <p className="text-sm text-amber-600 dark:text-amber-400">
+                  {result.documents.filter((d) => !d.ok).length} of {result.documents.length} documents
+                  didn&apos;t attach. Retry them above.
+                </p>
+              )}
+              {result?.kind === "error" && (
+                <p className="text-sm text-red-600 dark:text-red-400">{result.message}</p>
+              )}
+              <p className="text-xs text-zinc-400 dark:text-zinc-500">
+                {!isSubmittable
+                  ? "Only available for document types configured for Axis submission (currently: DHL SameDay ticket)."
+                  : alreadySubmitted
+                    ? "This ticket has already been submitted to Axis."
+                    : "Creates a real dispatch order in Skyline's Axis system - this is not a simulation."}
+              </p>
             </div>
           </div>
         ) : (

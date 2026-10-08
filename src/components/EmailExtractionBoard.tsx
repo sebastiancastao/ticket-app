@@ -4,17 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import { MOCK_EMAILS } from "@/lib/mock-emails";
 import { extractShipmentData } from "@/lib/extract-shipment-data";
 import type { MissiveEmail } from "@/lib/missive";
-import type { DocumentMapping } from "@/lib/dhl-sameday-ticket";
 import { AXIS_SUBMITTABLE_TYPES } from "@/lib/axis-map";
 import type { TicketPriority } from "@/lib/tickets";
+import { applyFieldEdits, submitToAxis, type SubmitOutcome } from "@/lib/axis-client";
 import {
-  formatBytes,
-  MAX_ORDER_DOCUMENTS,
-  MAX_ORDER_DOCUMENTS_BYTES,
-  ORDER_DOCUMENT_ACCEPT,
-  orderDocumentProblem,
-  type OrderDocumentResult,
-} from "@/lib/order-documents";
+  EditableTicketFields,
+  OrderDocumentsSection,
+  useDocumentUploadConfigured,
+  useFieldEdits,
+  useOrderDocuments,
+} from "@/components/TicketOrderControls";
 
 const PRIORITY_LABELS: Record<TicketPriority, string> = {
   low: "Low",
@@ -28,9 +27,6 @@ const PRIORITY_STYLES: Record<TicketPriority, string> = {
   high: "bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400",
 };
 
-type SubmitOutcome =
-  | { kind: "success"; orderTrackingId: string; documents: OrderDocumentResult[] }
-  | { kind: "error"; message: string };
 type SubmitStatus = { kind: "idle" } | { kind: "submitting" } | SubmitOutcome;
 type BulkStatus =
   | { kind: "idle" }
@@ -54,19 +50,9 @@ export function EmailExtractionBoard() {
   const [status, setStatus] = useState<SubmitStatus>({ kind: "idle" });
   const [bulkStatus, setBulkStatus] = useState<BulkStatus>({ kind: "idle" });
   const [results, setResults] = useState<Record<string, SubmitOutcome>>({});
-  // User corrections to extracted field values, keyed by email id then field
-  // label. Kept separate from `emails` so a re-fetch of the inbox doesn't
-  // clobber in-progress edits.
-  const [fieldEdits, setFieldEdits] = useState<Record<string, Record<string, string>>>({});
-  // Extra files to attach to each ticket's Axis order, keyed by email id. A
-  // file stays here until it's attached, so a failed upload can be retried.
-  const [pendingDocs, setPendingDocs] = useState<Record<string, File[]>>({});
-  // Names of files already attached to each ticket's order.
-  const [attachedDocs, setAttachedDocs] = useState<Record<string, string[]>>({});
-  const [docErrors, setDocErrors] = useState<Record<string, string>>({});
-  // null until the server answers; false disables the file picker.
-  const [docUploadConfigured, setDocUploadConfigured] = useState<boolean | null>(null);
-  const [uploadingDocsFor, setUploadingDocsFor] = useState<string | null>(null);
+  const fieldEdits = useFieldEdits();
+  const docs = useOrderDocuments();
+  const docUploadConfigured = useDocumentUploadConfigured();
 
   // Only emails with a recognized document (DHL SameDay ticket, AIT delivery
   // order, ...) show up in the board — everything else is inbox noise
@@ -84,7 +70,7 @@ export function EmailExtractionBoard() {
     () => submittableTicketEmails.filter((email) => results[email.id]?.kind !== "success"),
     [submittableTicketEmails, results]
   );
-  const isBusy = status.kind === "submitting" || bulkStatus.kind === "running" || uploadingDocsFor !== null;
+  const isBusy = status.kind === "submitting" || bulkStatus.kind === "running" || docs.uploadingFor !== null;
 
   useEffect(() => {
     let cancelled = false;
@@ -114,21 +100,6 @@ export function EmailExtractionBoard() {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/axis-documents")
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data: { configured?: boolean } | null) => {
-        if (!cancelled && typeof data?.configured === "boolean") setDocUploadConfigured(data.configured);
-      })
-      .catch(() => {
-        // Unknown: leave the picker enabled and let the server report it.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const selectedEmail = ticketEmails.find((email) => email.id === selectedId);
   const extracted = useMemo(
     () => (selectedEmail ? extractShipmentData(selectedEmail) : null),
@@ -151,126 +122,16 @@ export function EmailExtractionBoard() {
     setStatus({ kind: "idle" });
   }
 
-  function handleFieldChange(emailId: string, label: string, value: string) {
-    setFieldEdits((prev) => ({
-      ...prev,
-      [emailId]: { ...prev[emailId], [label]: value },
-    }));
-  }
-
-  function handleFieldReset(emailId: string, label: string) {
-    setFieldEdits((prev) => {
-      if (!prev[emailId] || !(label in prev[emailId])) return prev;
-      const emailEdits = { ...prev[emailId] };
-      delete emailEdits[label];
-      return { ...prev, [emailId]: emailEdits };
-    });
-  }
-
-  function handleAddDocuments(emailId: string, picked: File[]) {
-    if (picked.length === 0) return;
-    const existing = pendingDocs[emailId] ?? [];
-    const isDuplicate = (file: File) =>
-      existing.some((e) => e.name === file.name && e.size === file.size && e.lastModified === file.lastModified);
-    const next = [...existing, ...picked.filter((file) => !isDuplicate(file))];
-    const problem = orderDocumentProblem(next);
-    setDocErrors((prev) => ({ ...prev, [emailId]: problem ?? "" }));
-    if (!problem) setPendingDocs((prev) => ({ ...prev, [emailId]: next }));
-  }
-
-  function handleRemoveDocument(emailId: string, file: File) {
-    setPendingDocs((prev) => ({ ...prev, [emailId]: (prev[emailId] ?? []).filter((f) => f !== file) }));
-    setDocErrors((prev) => ({ ...prev, [emailId]: "" }));
-  }
-
-  // `docResults[i]` is the outcome for `sent[i]`. Attached files move from the
-  // pending list to the attached list; failed ones stay pending for a retry.
-  function applyDocumentResults(emailId: string, sent: File[], docResults: OrderDocumentResult[]) {
-    if (sent.length === 0) return;
-    const attached = new Set(sent.filter((_, i) => docResults[i]?.ok));
-    const failures = docResults.filter((r) => !r.ok);
-    setPendingDocs((prev) => ({ ...prev, [emailId]: (prev[emailId] ?? []).filter((f) => !attached.has(f)) }));
-    setAttachedDocs((prev) => ({
-      ...prev,
-      [emailId]: [...(prev[emailId] ?? []), ...docResults.filter((r) => r.ok).map((r) => r.filename)],
-    }));
-    setDocErrors((prev) => ({
-      ...prev,
-      [emailId]: failures.map((f) => `${f.filename}: ${f.error ?? "Upload failed."}`).join("\n"),
-    }));
-  }
-
-  // Applies any user edits on top of the extracted fields — this is what
-  // actually gets submitted, so a corrected AWB or address reaches Axis.
-  function effectiveMapping(email: MissiveEmail): DocumentMapping | undefined {
-    const mapping = email.ticketMapping;
-    if (!mapping) return undefined;
-    const edits = fieldEdits[email.id];
-    if (!edits) return mapping;
-    return {
-      ...mapping,
-      fields: mapping.fields.map((f) =>
-        f.label in edits ? { ...f, value: edits[f.label].trim() === "" ? null : edits[f.label] } : f
-      ),
-    };
-  }
-
   async function submitTicket(email: MissiveEmail): Promise<SubmitOutcome> {
-    const docs = pendingDocs[email.id] ?? [];
-    try {
-      // Multipart so the extra documents travel with the order in one request.
-      const form = new FormData();
-      form.append("payload", JSON.stringify({ mapping: effectiveMapping(email), sourceEmailId: email.id }));
-      for (const file of docs) form.append("documents", file, file.name);
-      const response = await fetch("/api/axis-submit", { method: "POST", body: form });
-      // A body over the hosting limit is rejected before it reaches the route,
-      // with a non-JSON response.
-      const data = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(
-          data?.error ??
-            (response.status === 413
-              ? "The documents are too large to upload."
-              : `Axis submit failed (status ${response.status})`)
-        );
-      }
-      const documents: OrderDocumentResult[] = Array.isArray(data?.documents) ? data.documents : [];
-      applyDocumentResults(email.id, docs, documents);
-      return { kind: "success", orderTrackingId: String(data?.orderTrackingId ?? ""), documents };
-    } catch (err) {
-      return { kind: "error", message: err instanceof Error ? err.message : "Failed to submit to Axis." };
-    }
-  }
-
-  // Attaches pending documents to a ticket whose order already exists.
-  async function handleUploadDocuments(email: MissiveEmail) {
-    const result = results[email.id];
-    const docs = pendingDocs[email.id] ?? [];
-    if (result?.kind !== "success" || !result.orderTrackingId || docs.length === 0 || isBusy) return;
-    setUploadingDocsFor(email.id);
-    try {
-      const form = new FormData();
-      form.append("orderTrackingId", result.orderTrackingId);
-      for (const file of docs) form.append("documents", file, file.name);
-      const response = await fetch("/api/axis-documents", { method: "POST", body: form });
-      const data = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(
-          data?.error ??
-            (response.status === 413
-              ? "The documents are too large to upload."
-              : `Document upload failed (status ${response.status})`)
-        );
-      }
-      applyDocumentResults(email.id, docs, Array.isArray(data?.documents) ? data.documents : []);
-    } catch (err) {
-      setDocErrors((prev) => ({
-        ...prev,
-        [email.id]: err instanceof Error ? err.message : "Failed to upload documents to Axis.",
-      }));
-    } finally {
-      setUploadingDocsFor(null);
-    }
+    if (!email.ticketMapping) return { kind: "error", message: "No ticket data to submit." };
+    const files = docs.pendingFor(email.id);
+    const outcome = await submitToAxis({
+      mapping: applyFieldEdits(email.ticketMapping, fieldEdits.editsFor(email.id)),
+      sourceEmailId: email.id,
+      documents: files,
+    });
+    if (outcome.kind === "success") docs.applyResults(email.id, files, outcome.documents);
+    return outcome;
   }
 
   async function handleSubmit() {
@@ -284,7 +145,7 @@ export function EmailExtractionBoard() {
   async function handleProcessAll() {
     if (isBusy || pendingTicketEmails.length === 0) return;
     const targets = pendingTicketEmails;
-    const docCount = targets.reduce((sum, email) => sum + (pendingDocs[email.id]?.length ?? 0), 0);
+    const docCount = targets.reduce((sum, email) => sum + docs.pendingFor(email.id).length, 0);
     const confirmed = window.confirm(
       `This will submit ${targets.length} ticket${
         targets.length === 1 ? "" : "s"
@@ -419,35 +280,29 @@ export function EmailExtractionBoard() {
           )}
           {selectedEmail?.ticketMapping ? (
             <div className="flex flex-col gap-3">
-              {selectedEmail.ticketMapping.fields.map((field) => {
-                const emailId = selectedEmail.id;
-                const edited = fieldEdits[emailId]?.[field.label];
-                const currentValue = edited ?? field.value ?? "";
-                const isEdited = edited !== undefined && edited !== (field.value ?? "");
-                return (
-                  <EditableTicketField
-                    key={field.label}
-                    label={field.label}
-                    value={currentValue}
-                    isEdited={isEdited}
-                    disabled={isBusy || alreadySubmitted}
-                    onChange={(value) => handleFieldChange(emailId, field.label, value)}
-                    onReset={() => handleFieldReset(emailId, field.label)}
-                  />
-                );
-              })}
+              <EditableTicketFields
+                mapping={selectedEmail.ticketMapping}
+                edits={fieldEdits.editsFor(selectedEmail.id)}
+                disabled={isBusy || alreadySubmitted}
+                onChange={(label, value) => fieldEdits.change(selectedEmail.id, label, value)}
+                onReset={(label) => fieldEdits.reset(selectedEmail.id, label)}
+              />
               {AXIS_SUBMITTABLE_TYPES.has(selectedEmail.ticketMapping.type) && (
                 <OrderDocumentsSection
-                  pending={pendingDocs[selectedEmail.id] ?? []}
-                  attached={attachedDocs[selectedEmail.id] ?? []}
-                  error={docErrors[selectedEmail.id] ?? ""}
+                  pending={docs.pendingFor(selectedEmail.id)}
+                  attached={docs.attachedFor(selectedEmail.id)}
+                  error={docs.errorFor(selectedEmail.id)}
                   configured={docUploadConfigured}
                   orderTrackingId={selectedResult?.kind === "success" ? selectedResult.orderTrackingId : ""}
                   disabled={isBusy}
-                  uploading={uploadingDocsFor === selectedEmail.id}
-                  onAdd={(files) => handleAddDocuments(selectedEmail.id, files)}
-                  onRemove={(file) => handleRemoveDocument(selectedEmail.id, file)}
-                  onUpload={() => handleUploadDocuments(selectedEmail)}
+                  uploading={docs.uploadingFor === selectedEmail.id}
+                  onAdd={(files) => docs.add(selectedEmail.id, files)}
+                  onRemove={(file) => docs.remove(selectedEmail.id, file)}
+                  onUpload={() => {
+                    if (selectedResult?.kind === "success" && !isBusy) {
+                      void docs.uploadTo(selectedEmail.id, selectedResult.orderTrackingId);
+                    }
+                  }}
                 />
               )}
             </div>
@@ -548,171 +403,11 @@ export function EmailExtractionBoard() {
   );
 }
 
-function OrderDocumentsSection({
-  pending,
-  attached,
-  error,
-  configured,
-  orderTrackingId,
-  disabled,
-  uploading,
-  onAdd,
-  onRemove,
-  onUpload,
-}: {
-  pending: File[];
-  attached: string[];
-  error: string;
-  configured: boolean | null;
-  /** Set once the ticket's order exists; files then go straight onto it. */
-  orderTrackingId: string;
-  disabled: boolean;
-  uploading: boolean;
-  onAdd: (files: File[]) => void;
-  onRemove: (file: File) => void;
-  onUpload: () => void;
-}) {
-  const addDisabled = disabled || configured === false;
-  return (
-    <div className="flex flex-col gap-2 border-t border-black/[.08] pt-3 dark:border-white/[.1]">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-zinc-500 dark:text-zinc-400">Extra documents</span>
-        <label
-          className={`inline-flex items-center rounded-full border border-black/[.08] px-3 py-1 text-xs font-medium text-zinc-700 transition-colors focus-within:ring-2 focus-within:ring-zinc-400 dark:border-white/[.1] dark:text-zinc-300 ${
-            addDisabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-black/[.03] dark:hover:bg-[#141414]"
-          }`}
-        >
-          + Add files
-          <input
-            type="file"
-            multiple
-            accept={ORDER_DOCUMENT_ACCEPT}
-            disabled={addDisabled}
-            className="sr-only"
-            onChange={(e) => {
-              const files = Array.from(e.target.files ?? []);
-              // Reset so picking the same file again still fires onChange.
-              e.target.value = "";
-              onAdd(files);
-            }}
-          />
-        </label>
-      </div>
-
-      {configured === false && (
-        <p className="text-xs text-amber-600 dark:text-amber-400">
-          Document upload to Axis isn&apos;t configured on the server yet (AXIS_DOCUMENT_UPLOAD_PATH).
-        </p>
-      )}
-
-      {attached.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {attached.map((name, i) => (
-            <li key={`${name}-${i}`} className="truncate text-xs text-emerald-700 dark:text-emerald-400">
-              ✓ {name}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {pending.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {pending.map((file, i) => (
-            <li
-              key={`${file.name}-${file.size}-${file.lastModified}-${i}`}
-              className="flex items-center justify-between gap-2 rounded-md border border-black/[.08] px-2 py-1 text-xs dark:border-white/[.1]"
-            >
-              <span className="truncate text-zinc-800 dark:text-zinc-200">{file.name}</span>
-              <span className="flex shrink-0 items-center gap-2">
-                <span className="text-zinc-400 dark:text-zinc-500">{formatBytes(file.size)}</span>
-                <button
-                  type="button"
-                  onClick={() => onRemove(file)}
-                  disabled={disabled}
-                  aria-label={`Remove ${file.name}`}
-                  className="rounded px-1 text-zinc-400 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-zinc-200"
-                >
-                  ×
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {error && <p className="whitespace-pre-line text-xs text-red-600 dark:text-red-400">{error}</p>}
-
-      {orderTrackingId && pending.length > 0 && (
-        <button
-          type="button"
-          onClick={onUpload}
-          disabled={disabled || configured === false}
-          className="w-fit rounded-full bg-foreground px-4 py-1.5 text-xs font-medium text-background transition-colors hover:bg-[#383838] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-[#ccc]"
-        >
-          {uploading
-            ? "Uploading…"
-            : `Upload ${pending.length} document${pending.length === 1 ? "" : "s"} to order ${orderTrackingId}`}
-        </button>
-      )}
-
-      <p className="text-[11px] text-zinc-400 dark:text-zinc-500">
-        {orderTrackingId ? "Added to the existing Axis order." : "Sent with the order when you submit."} PDF, image,
-        Word, or Excel. Up to {MAX_ORDER_DOCUMENTS} files, {formatBytes(MAX_ORDER_DOCUMENTS_BYTES)} total.
-      </p>
-    </div>
-  );
-}
-
 function ExtractedField({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col gap-1">
       <span className="text-xs text-zinc-500 dark:text-zinc-400">{label}</span>
       <p className="whitespace-pre-line text-sm text-zinc-900 dark:text-zinc-100">{value}</p>
-    </div>
-  );
-}
-
-function EditableTicketField({
-  label,
-  value,
-  isEdited,
-  disabled,
-  onChange,
-  onReset,
-}: {
-  label: string;
-  value: string;
-  isEdited: boolean;
-  disabled: boolean;
-  onChange: (value: string) => void;
-  onReset: () => void;
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-zinc-500 dark:text-zinc-400">{label}</span>
-        {isEdited && (
-          <button
-            type="button"
-            onClick={onReset}
-            className="text-[10px] font-medium text-zinc-400 hover:text-zinc-600 hover:underline dark:hover:text-zinc-300"
-          >
-            Reset
-          </button>
-        )}
-      </div>
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled}
-        placeholder="Not found"
-        rows={Math.min(4, Math.max(1, value.split("\n").length))}
-        className={`w-full resize-none rounded-md border bg-transparent px-2 py-1.5 text-sm text-zinc-900 outline-none transition-colors focus:border-zinc-950 disabled:cursor-not-allowed disabled:opacity-60 dark:text-zinc-100 dark:focus:border-zinc-50 ${
-          isEdited
-            ? "border-amber-400 dark:border-amber-500/60"
-            : "border-black/[.1] dark:border-white/[.145]"
-        }`}
-      />
     </div>
   );
 }
