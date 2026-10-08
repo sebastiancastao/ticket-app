@@ -3,7 +3,6 @@ import type { DocumentMapping } from "@/lib/dhl-sameday-ticket";
 import {
   axisConfigFromEnv,
   AxisError,
-  isDocumentUploadConfigured,
   resolveServiceId,
   resolveVehicleId,
   submitOrders,
@@ -81,7 +80,6 @@ export async function POST(request: NextRequest) {
       skipped: order ? [] : [mapping?.type ?? "unknown"],
       placeholders,
       documents: documents.map((d) => ({ filename: d.filename, contentType: d.contentType, size: d.bytes.byteLength })),
-      documentUploadConfigured: isDocumentUploadConfigured(cfg),
     });
   }
 
@@ -96,18 +94,6 @@ export async function POST(request: NextRequest) {
   if (!(cfg.username && cfg.password)) missing.push("AXIS_USERNAME + AXIS_PASSWORD");
   if (missing.length > 0) {
     return NextResponse.json({ error: `Axis is not configured. Set: ${missing.join(", ")}.` }, { status: 400 });
-  }
-
-  // Refuse before creating the order: otherwise it would be created without
-  // the documents the user expects to see on it.
-  if (documents.length > 0 && !isDocumentUploadConfigured(cfg)) {
-    return NextResponse.json(
-      {
-        error:
-          "Document upload to Axis isn't configured yet (AXIS_DOCUMENT_UPLOAD_PATH). Remove the extra documents to submit the order without them.",
-      },
-      { status: 400 }
-    );
   }
 
   try {

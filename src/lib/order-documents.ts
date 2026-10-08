@@ -19,20 +19,16 @@ export type OrderDocumentResult = {
   error?: string;
 };
 
-// Extension -> MIME type. Validation goes by extension because browsers often
-// leave File.type empty for .tif/.docx/.xlsx depending on the OS.
+// Extension -> MIME type: exactly the types the portal's own Attach File
+// dialog allows. Validation goes by extension because browsers can leave
+// File.type empty depending on the OS.
 const ORDER_DOCUMENT_TYPES: Record<string, string> = {
   pdf: "application/pdf",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   png: "image/png",
   gif: "image/gif",
-  tif: "image/tiff",
-  tiff: "image/tiff",
-  doc: "application/msword",
-  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  xls: "application/vnd.ms-excel",
-  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  bmp: "image/bmp",
 };
 
 /** Value for an <input type="file" accept="..."> restricted to supported types. */
@@ -69,7 +65,7 @@ export function orderDocumentProblem(files: ReadonlyArray<{ name: string; size: 
   }
   const unsupported = files.filter((f) => !(extensionOf(f.name) in ORDER_DOCUMENT_TYPES));
   if (unsupported.length > 0) {
-    return `Unsupported file type: ${unsupported.map((f) => f.name).join(", ")}. Use PDF, image, Word, or Excel files.`;
+    return `Unsupported file type: ${unsupported.map((f) => f.name).join(", ")}. Use PDF, JPG, PNG, GIF, or BMP files.`;
   }
   const empty = files.filter((f) => f.size === 0);
   if (empty.length > 0) {

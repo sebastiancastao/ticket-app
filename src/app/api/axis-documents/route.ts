@@ -1,15 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { axisConfigFromEnv, AxisError, isDocumentUploadConfigured, uploadOrderDocuments } from "@/lib/axis";
+import { axisConfigFromEnv, AxisError, uploadOrderDocuments } from "@/lib/axis";
 import { readOrderDocuments } from "@/lib/order-documents";
 
 // Logs into the Axis ClientPortal from the server, so force the Node.js runtime.
 export const runtime = "nodejs";
-
-// Whether the server can attach documents to orders, so the board can say so
-// before anyone picks files.
-export function GET() {
-  return NextResponse.json({ configured: isDocumentUploadConfigured() });
-}
 
 // Attaches extra documents to an order that already exists in Axis: files
 // added after the order was submitted, or a retry of ones that failed then.
@@ -24,8 +18,9 @@ export async function POST(request: NextRequest) {
   }
 
   const orderTrackingId = String(form.get("orderTrackingId") ?? "").trim();
-  if (!/^\d{1,20}$/.test(orderTrackingId)) {
-    return NextResponse.json({ error: "A numeric orderTrackingId is required." }, { status: 400 });
+  // Axis tracking ids look like "76.082426".
+  if (!/^\d{1,12}(\.\d{1,8})?$/.test(orderTrackingId)) {
+    return NextResponse.json({ error: "A valid orderTrackingId is required." }, { status: 400 });
   }
 
   const read = await readOrderDocuments(form);
@@ -39,12 +34,6 @@ export async function POST(request: NextRequest) {
   const cfg = axisConfigFromEnv();
   if (!(cfg.username && cfg.password)) {
     return NextResponse.json({ error: "Axis is not configured. Set: AXIS_USERNAME + AXIS_PASSWORD." }, { status: 400 });
-  }
-  if (!isDocumentUploadConfigured(cfg)) {
-    return NextResponse.json(
-      { error: "Document upload to Axis isn't configured yet. Set AXIS_DOCUMENT_UPLOAD_PATH." },
-      { status: 400 }
-    );
   }
 
   try {

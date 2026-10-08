@@ -68,15 +68,3 @@ export async function uploadDocumentsToAxisOrder(
   if (!response.ok) throw new Error(errorMessage(response, data, "Document upload failed"));
   return Array.isArray(data?.documents) ? data.documents : [];
 }
-
-/** Whether the server can attach documents to orders, or null if unknown. */
-export async function fetchDocumentUploadConfigured(): Promise<boolean | null> {
-  try {
-    const response = await fetch("/api/axis-documents");
-    if (!response.ok) return null;
-    const data = (await response.json()) as { configured?: unknown };
-    return typeof data.configured === "boolean" ? data.configured : null;
-  } catch {
-    return null;
-  }
-}

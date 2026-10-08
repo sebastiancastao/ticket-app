@@ -10,7 +10,6 @@ import { applyFieldEdits, submitToAxis, type SubmitOutcome } from "@/lib/axis-cl
 import {
   EditableTicketFields,
   OrderDocumentsSection,
-  useDocumentUploadConfigured,
   useFieldEdits,
   useOrderDocuments,
 } from "@/components/TicketOrderControls";
@@ -52,7 +51,6 @@ export function EmailExtractionBoard() {
   const [results, setResults] = useState<Record<string, SubmitOutcome>>({});
   const fieldEdits = useFieldEdits();
   const docs = useOrderDocuments();
-  const docUploadConfigured = useDocumentUploadConfigured();
 
   // Only emails with a recognized document (DHL SameDay ticket, AIT delivery
   // order, ...) show up in the board — everything else is inbox noise
@@ -292,7 +290,6 @@ export function EmailExtractionBoard() {
                   pending={docs.pendingFor(selectedEmail.id)}
                   attached={docs.attachedFor(selectedEmail.id)}
                   error={docs.errorFor(selectedEmail.id)}
-                  configured={docUploadConfigured}
                   orderTrackingId={selectedResult?.kind === "success" ? selectedResult.orderTrackingId : ""}
                   disabled={isBusy}
                   uploading={docs.uploadingFor === selectedEmail.id}

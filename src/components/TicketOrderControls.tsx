@@ -3,8 +3,8 @@
 // Ticket controls shared by the main board and the Missive iframe board:
 // editable extracted fields, plus the extra documents attached to an order.
 
-import { useEffect, useState } from "react";
-import { fetchDocumentUploadConfigured, uploadDocumentsToAxisOrder } from "@/lib/axis-client";
+import { useState } from "react";
+import { uploadDocumentsToAxisOrder } from "@/lib/axis-client";
 import type { DocumentMapping } from "@/lib/dhl-sameday-ticket";
 import {
   formatBytes,
@@ -14,21 +14,6 @@ import {
   orderDocumentProblem,
   type OrderDocumentResult,
 } from "@/lib/order-documents";
-
-/** Whether the server can attach documents to orders; null until it answers. */
-export function useDocumentUploadConfigured(): boolean | null {
-  const [configured, setConfigured] = useState<boolean | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void fetchDocumentUploadConfigured().then((value) => {
-      if (!cancelled) setConfigured(value);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return configured;
-}
 
 /**
  * User corrections to extracted field values, keyed by email id then field
@@ -132,7 +117,6 @@ export function OrderDocumentsSection({
   pending,
   attached,
   error,
-  configured,
   orderTrackingId,
   disabled,
   uploading,
@@ -143,7 +127,6 @@ export function OrderDocumentsSection({
   pending: File[];
   attached: string[];
   error: string;
-  configured: boolean | null;
   /** Set once the ticket's order exists; files then go straight onto it. */
   orderTrackingId: string;
   disabled: boolean;
@@ -152,14 +135,13 @@ export function OrderDocumentsSection({
   onRemove: (file: File) => void;
   onUpload: () => void;
 }) {
-  const addDisabled = disabled || configured === false;
   return (
     <div className="flex flex-col gap-2 border-t border-black/[.08] pt-3 dark:border-white/[.1]">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-zinc-500 dark:text-zinc-400">Extra documents</span>
         <label
           className={`inline-flex items-center rounded-full border border-black/[.08] px-3 py-1 text-xs font-medium text-zinc-700 transition-colors focus-within:ring-2 focus-within:ring-zinc-400 dark:border-white/[.1] dark:text-zinc-300 ${
-            addDisabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-black/[.03] dark:hover:bg-[#141414]"
+            disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-black/[.03] dark:hover:bg-[#141414]"
           }`}
         >
           + Add files
@@ -167,7 +149,7 @@ export function OrderDocumentsSection({
             type="file"
             multiple
             accept={ORDER_DOCUMENT_ACCEPT}
-            disabled={addDisabled}
+            disabled={disabled}
             className="sr-only"
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);
@@ -178,12 +160,6 @@ export function OrderDocumentsSection({
           />
         </label>
       </div>
-
-      {configured === false && (
-        <p className="text-xs text-amber-600 dark:text-amber-400">
-          Document upload to Axis isn&apos;t configured on the server yet (AXIS_DOCUMENT_UPLOAD_PATH).
-        </p>
-      )}
 
       {attached.length > 0 && (
         <ul className="flex flex-col gap-1">
@@ -226,7 +202,7 @@ export function OrderDocumentsSection({
         <button
           type="button"
           onClick={onUpload}
-          disabled={disabled || configured === false}
+          disabled={disabled}
           className="w-fit rounded-full bg-foreground px-4 py-1.5 text-xs font-medium text-background transition-colors hover:bg-[#383838] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-[#ccc]"
         >
           {uploading
@@ -236,8 +212,8 @@ export function OrderDocumentsSection({
       )}
 
       <p className="text-[11px] text-zinc-400 dark:text-zinc-500">
-        {orderTrackingId ? "Added to the existing Axis order." : "Sent with the order when you submit."} PDF, image,
-        Word, or Excel. Up to {MAX_ORDER_DOCUMENTS} files, {formatBytes(MAX_ORDER_DOCUMENTS_BYTES)} total.
+        {orderTrackingId ? "Added to the existing Axis order." : "Sent with the order when you submit."} PDF, JPG, PNG,
+        GIF, or BMP. Up to {MAX_ORDER_DOCUMENTS} files, {formatBytes(MAX_ORDER_DOCUMENTS_BYTES)} total.
       </p>
     </div>
   );

@@ -9,7 +9,6 @@ import { applyFieldEdits, submitToAxis, type SubmitOutcome } from "@/lib/axis-cl
 import {
   EditableTicketFields,
   OrderDocumentsSection,
-  useDocumentUploadConfigured,
   useFieldEdits,
   useOrderDocuments,
 } from "@/components/TicketOrderControls";
@@ -72,7 +71,6 @@ export function EmbedEmailBoard({ token }: { token: string }) {
   // survive switching conversations in Missive and coming back.
   const fieldEdits = useFieldEdits();
   const docs = useOrderDocuments();
-  const docUploadConfigured = useDocumentUploadConfigured();
   const [results, setResults] = useState<Record<string, SubmitOutcome>>({});
   const [submittingFor, setSubmittingFor] = useState<string | null>(null);
 
@@ -297,7 +295,6 @@ export function EmbedEmailBoard({ token }: { token: string }) {
                   pending={docs.pendingFor(email.id)}
                   attached={docs.attachedFor(email.id)}
                   error={docs.errorFor(email.id)}
-                  configured={docUploadConfigured}
                   orderTrackingId={result?.kind === "success" ? result.orderTrackingId : ""}
                   disabled={isBusy}
                   uploading={docs.uploadingFor === email.id}

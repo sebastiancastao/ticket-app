@@ -92,11 +92,6 @@ export type AxisConfig = {
   vehicleId?: number;
   packageId?: number;
   caller?: string;
-  /**
-   * ClientPortal path that attaches a file to an order. Unset means document
-   * upload is off. See uploadPortalDocument() for why this is configured.
-   */
-  documentUploadPath?: string;
 };
 
 const DEFAULT_PORTAL_BASE_URL = "https://skylinecourierlogistics.com/Xcelerator";
@@ -126,13 +121,7 @@ export function axisConfigFromEnv(): AxisConfig {
     vehicleId: intEnv("AXIS_VEHICLE_ID"),
     packageId: intEnv("AXIS_PACKAGE_ID"),
     caller: process.env.AXIS_CALLER || undefined,
-    documentUploadPath: process.env.AXIS_DOCUMENT_UPLOAD_PATH?.trim() || undefined,
   };
-}
-
-/** Whether attaching extra documents to orders is switched on. */
-export function isDocumentUploadConfigured(cfg: AxisConfig = axisConfigFromEnv()): boolean {
-  return Boolean(cfg.documentUploadPath);
 }
 
 // --- Errors -----------------------------------------------------------------
@@ -936,31 +925,30 @@ export async function submitOrders(
 
 // The public Axis REST API has no way to add a document to an order (its
 // /v4/Order endpoints only read OrderDocuments back), so attachments go
-// through the same ClientPortal session as order submission.
-//
-// UNCONFIRMED: the portal's attach-file request has not been captured yet. The
-// path comes from AXIS_DOCUMENT_UPLOAD_PATH, and the form below sends the
-// order id as "OrderTrackingID" plus the file as "file". To confirm, attach a
-// file to an order in the ClientPortal with the browser's DevTools Network
-// tab open, then set the env var to that request's path (from /ClientPortal
-// on, e.g. "/ClientPortal/ClientPortal/api/<controller>/<action>") and rename
-// the two form fields here if the portal uses different names.
+// through the same ClientPortal session as order submission. This sends what
+// the order window's "Attach File" > "Upload File" sends (the portal's
+// attachDocument() script, read from the logged-in Main page on 2026-10-08):
+// one multipart "FileUpload" file per request with the order in the query
+// string, answered by a bare 1 on success or an error message otherwise. An
+// empty _p_Location attaches an order document; "pli"/"dli" would set the
+// pickup/delivery location image instead.
+const ATTACH_DOCUMENT_PATH = "/ClientPortal/ClientPortal/api/trackingOnline/attachDocument";
+
 async function uploadPortalDocument(
   session: PortalSession,
-  path: string,
   orderTrackingId: string,
   doc: OrderDocumentUpload
 ): Promise<void> {
   const form = new FormData();
-  form.append("OrderTrackingID", orderTrackingId);
-  form.append("file", new Blob([doc.bytes], { type: doc.contentType }), doc.filename);
+  form.append("FileUpload", new Blob([doc.bytes], { type: doc.contentType }), doc.filename);
+  const query = new URLSearchParams({ _p_OrderTrackingID: orderTrackingId, _p_Location: "" });
 
   // No Content-Type header: fetch sets the multipart boundary itself.
-  const res = await portalFetch(session, path, {
+  const res = await portalFetch(session, `${ATTACH_DOCUMENT_PATH}?${query}`, {
     method: "POST",
     headers: {
-      Accept: "application/json, text/plain, */*",
-      Referer: `${session.cfg.portalBaseUrl}/ClientPortal/NewOrder/NewOrder`,
+      Accept: "application/json, text/javascript, */*",
+      Referer: `${session.cfg.portalBaseUrl}/ClientPortal/ClientPortal/Main`,
     },
     body: form,
   });
@@ -972,22 +960,22 @@ async function uploadPortalDocument(
   if (/id=["']loginForm["']/i.test(text)) {
     throw new AxisError("Upload failed: the Axis portal session was rejected.");
   }
-  let parsed: unknown;
+  let reply: unknown = text.trim();
   try {
-    parsed = JSON.parse(text);
+    reply = JSON.parse(text);
   } catch {
-    return; // Non-JSON 2xx (empty body, plain "OK") counts as success.
+    // Not JSON: the raw text is the portal's message.
   }
-  if (parsed && typeof parsed === "object" && "MySystemVariables" in parsed) {
-    assertPortalOrderOk(parsed as PortalOrderResponse, "Axis document upload");
-  }
+  if (reply === 1 || reply === "1") return;
+  const message = typeof reply === "string" && reply ? reply : text.trim().slice(0, 300);
+  throw new AxisError(`Axis did not attach the file: ${message || "empty reply"}`);
 }
 
 /**
  * Attach documents to an existing order, one at a time over one portal login.
  * Returns a result per document in the order given; a document that fails
- * doesn't stop the rest. Throws only when nothing could be attempted
- * (upload not configured, or the portal login failed).
+ * doesn't stop the rest. Throws only when nothing could be attempted (the
+ * portal login failed).
  */
 export async function uploadOrderDocuments(
   orderTrackingId: string,
@@ -995,16 +983,12 @@ export async function uploadOrderDocuments(
   cfg: AxisConfig = axisConfigFromEnv()
 ): Promise<OrderDocumentResult[]> {
   if (documents.length === 0) return [];
-  if (!cfg.documentUploadPath) {
-    throw new AxisError("Document upload to Axis is not configured. Set AXIS_DOCUMENT_UPLOAD_PATH.");
-  }
-  const path = cfg.documentUploadPath.startsWith("/") ? cfg.documentUploadPath : `/${cfg.documentUploadPath}`;
   const session = await loginToPortal(cfg);
 
   const results: OrderDocumentResult[] = [];
   for (const doc of documents) {
     try {
-      await uploadPortalDocument(session, path, orderTrackingId, doc);
+      await uploadPortalDocument(session, orderTrackingId, doc);
       results.push({ filename: doc.filename, ok: true });
     } catch (err) {
       results.push({
