@@ -1,8 +1,17 @@
 import { NextResponse, type NextRequest } from "next/server";
 import type { DocumentMapping } from "@/lib/dhl-sameday-ticket";
-import { axisConfigFromEnv, AxisError, resolveServiceId, resolveVehicleId, submitOrders } from "@/lib/axis";
+import {
+  axisConfigFromEnv,
+  AxisError,
+  isDocumentUploadConfigured,
+  resolveServiceId,
+  resolveVehicleId,
+  submitOrders,
+  uploadOrderDocuments,
+} from "@/lib/axis";
 import { AXIS_SUBMITTABLE_TYPES, mappingToAxisOrder, type AxisOrderDefaults } from "@/lib/axis-map";
 import { appendLoggedOrders, type LoggedOrder } from "@/lib/order-log";
+import { readOrderDocuments, type OrderDocumentResult, type OrderDocumentUpload } from "@/lib/order-documents";
 
 // Talks to the Axis ClientPortal over the network from the server (keeps
 // credentials off the client), so force the Node.js runtime.
@@ -10,13 +19,29 @@ export const runtime = "nodejs";
 
 // A successful (non-dryRun) submit creates a REAL dispatch order in Skyline's
 // production system — there is no sandbox, and this route is unauthenticated.
+//
+// Accepts either a JSON body, or multipart/form-data with the same JSON under
+// "payload" plus any extra files under "documents" to attach to the new order.
 export async function POST(request: NextRequest) {
   let mapping: DocumentMapping;
   let sourceEmailId: string | undefined;
   let dryRun = false;
   let mode: "air-tender" | "normal" = "air-tender";
+  let documents: OrderDocumentUpload[] = [];
   try {
-    const body = await request.json();
+    let body;
+    if ((request.headers.get("content-type") ?? "").includes("multipart/form-data")) {
+      const form = await request.formData();
+      const payload = form.get("payload");
+      body = JSON.parse(typeof payload === "string" ? payload : "{}");
+      const read = await readOrderDocuments(form);
+      if ("error" in read) {
+        return NextResponse.json({ error: read.error }, { status: 400 });
+      }
+      documents = read.documents;
+    } else {
+      body = await request.json();
+    }
     if (!body.mapping) {
       return NextResponse.json({ error: "No document mapping provided." }, { status: 400 });
     }
@@ -55,6 +80,8 @@ export async function POST(request: NextRequest) {
       order,
       skipped: order ? [] : [mapping?.type ?? "unknown"],
       placeholders,
+      documents: documents.map((d) => ({ filename: d.filename, contentType: d.contentType, size: d.bytes.byteLength })),
+      documentUploadConfigured: isDocumentUploadConfigured(cfg),
     });
   }
 
@@ -69,6 +96,18 @@ export async function POST(request: NextRequest) {
   if (!(cfg.username && cfg.password)) missing.push("AXIS_USERNAME + AXIS_PASSWORD");
   if (missing.length > 0) {
     return NextResponse.json({ error: `Axis is not configured. Set: ${missing.join(", ")}.` }, { status: 400 });
+  }
+
+  // Refuse before creating the order: otherwise it would be created without
+  // the documents the user expects to see on it.
+  if (documents.length > 0 && !isDocumentUploadConfigured(cfg)) {
+    return NextResponse.json(
+      {
+        error:
+          "Document upload to Axis isn't configured yet (AXIS_DOCUMENT_UPLOAD_PATH). Remove the extra documents to submit the order without them.",
+      },
+      { status: 400 }
+    );
   }
 
   try {
@@ -92,6 +131,28 @@ export async function POST(request: NextRequest) {
     const result = await submitOrders([order], cfg);
     const orderTrackingId = String(result.OrdersCreated?.[0] ?? "");
 
+    // The order exists from here on, so a document failure is reported per
+    // file rather than as a failed submit — retrying the submit would create a
+    // duplicate order. Failed files can be re-sent via /api/axis-documents.
+    let documentResults: OrderDocumentResult[] = [];
+    if (documents.length > 0) {
+      if (!orderTrackingId) {
+        documentResults = documents.map((d) => ({
+          filename: d.filename,
+          ok: false,
+          error: "Axis did not return an order tracking ID to attach the document to.",
+        }));
+      } else {
+        documentResults = await uploadOrderDocuments(orderTrackingId, documents, cfg).catch((err) =>
+          documents.map((d) => ({
+            filename: d.filename,
+            ok: false,
+            error: err instanceof Error ? err.message : "Upload failed.",
+          }))
+        );
+      }
+    }
+
     // Record the created order to the persistent log. Best-effort — never fail
     // the submit over logging.
     if (orderTrackingId) {
@@ -107,11 +168,14 @@ export async function POST(request: NextRequest) {
         delivery: order.DCoName,
         specInstr: order.SpecInstr,
         sourceEmailId,
+        documents: documentResults.length
+          ? documentResults.map((d) => ({ filename: d.filename, ok: d.ok }))
+          : undefined,
       };
       await appendLoggedOrders([entry]);
     }
 
-    return NextResponse.json({ ok: true, orderTrackingId });
+    return NextResponse.json({ ok: true, orderTrackingId, documents: documentResults });
   } catch (err) {
     const status = err instanceof AxisError && err.status ? err.status : 502;
     console.error("Axis submit failed:", err);

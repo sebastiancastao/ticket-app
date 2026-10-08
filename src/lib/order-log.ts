@@ -29,6 +29,8 @@ export type LoggedOrder = {
   specInstr?: string;
   /** Source email id, when known. */
   sourceEmailId?: string;
+  /** Extra documents sent with the order, and whether each one attached. */
+  documents?: { filename: string; ok: boolean }[];
 };
 
 // Stored under the project root so it persists across dev restarts. Kept out of
